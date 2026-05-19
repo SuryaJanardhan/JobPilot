@@ -10,12 +10,32 @@ import time
 import argparse
 import pandas as pd
 import re
+import tempfile
 
-# Add the inb directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'inb'))
+# Add the current inb directory to path
+sys.path.insert(0, os.path.dirname(__file__))
 
 from api.linkedin_api import LinkedIn
 from api.invitation.status import Invitation, Person
+
+
+def _script_path(filename):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
+def _atomic_write_excel(df, excel_path):
+    directory = os.path.dirname(os.path.abspath(excel_path))
+    fd, temp_path = tempfile.mkstemp(prefix='.linkedin-', suffix='.xlsx', dir=directory)
+    os.close(fd)
+    try:
+        df.to_excel(temp_path, index=False)
+        os.replace(temp_path, excel_path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def extract_public_id(linkedin_url):
@@ -29,10 +49,17 @@ def extract_public_id(linkedin_url):
 
 def load_profiles_from_excel(excel_path, limit=20):
     """Load profiles from Excel file that haven't been contacted yet."""
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(f'Excel file not found: {excel_path}')
+
     df = pd.read_excel(excel_path)
-    
-    # Filter rows where Status is empty/NaN (not contacted yet)
-    unsent = df[df['Status'].isna() | (df['Status'] == '')]
+    required_columns = {'Name', 'Company Name', 'Linkedin URL', 'Status'}
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Excel file missing required columns: {missing_columns}")
+
+    status_values = df['Status'].fillna('').astype(str).str.strip().str.lower()
+    unsent = df[status_values == '']
     
     profiles = []
     for _, row in unsent.head(limit).iterrows():
@@ -54,7 +81,7 @@ def update_excel_status(excel_path, df, row_index, status, delivered=''):
     df.at[row_index, 'Status'] = status
     if delivered:
         df.at[row_index, 'Delivered'] = delivered
-    df.to_excel(excel_path, index=False)
+    _atomic_write_excel(df, excel_path)
 
 
 def main():

@@ -10,6 +10,7 @@ import sys
 import json
 import time
 import argparse
+import tempfile
 import pandas as pd
 import re
 import random
@@ -31,27 +32,46 @@ DAILY_CONNECTION_LIMIT = 15  # If also sending connection requests
 USAGE_FILE = 'linkedin_usage.json'  # Track daily usage
 
 
+def _script_path(filename):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
+def _atomic_write_json(file_path, payload):
+    directory = os.path.dirname(file_path)
+    fd, temp_path = tempfile.mkstemp(prefix='.linkedin-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(payload, handle)
+        os.replace(temp_path, file_path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
 def load_usage():
     """Load daily usage tracking."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    usage_path = os.path.join(script_dir, USAGE_FILE)
+    usage_path = _script_path(USAGE_FILE)
     
     if os.path.exists(usage_path):
-        with open(usage_path, 'r') as f:
-            data = json.load(f)
-            # Reset if it's a new day
-            if data.get('date') != str(date.today()):
-                return {'date': str(date.today()), 'messages': 0, 'connections': 0}
-            return data
+        try:
+            with open(usage_path, 'r') as f:
+                data = json.load(f)
+                # Reset if it's a new day
+                if data.get('date') != str(date.today()):
+                    return {'date': str(date.today()), 'messages': 0, 'connections': 0}
+                return data
+        except (json.JSONDecodeError, OSError, ValueError):
+            return {'date': str(date.today()), 'messages': 0, 'connections': 0}
     return {'date': str(date.today()), 'messages': 0, 'connections': 0}
 
 
 def save_usage(usage):
     """Save daily usage tracking."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    usage_path = os.path.join(script_dir, USAGE_FILE)
-    with open(usage_path, 'w') as f:
-        json.dump(usage, f)
+    usage_path = _script_path(USAGE_FILE)
+    _atomic_write_json(usage_path, usage)
 
 
 def get_remaining_quota(action_type='messages'):
@@ -82,11 +102,19 @@ def extract_public_id(linkedin_url):
 
 def load_profiles_from_excel(excel_path, limit=20):
     """Load profiles from Excel file that haven't been messaged yet."""
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(f'Excel file not found: {excel_path}')
+
     df = pd.read_excel(excel_path)
+    required_columns = {'Name', 'Company Name', 'Linkedin URL', 'Status'}
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Excel file missing required columns: {missing_columns}")
     
     # Filter rows where Status doesn't indicate already messaged
-    already_done = ['sent', 'messaged', 'dm_sent', 'message_sent']
-    unsent = df[~df['Status'].isin(already_done) | df['Status'].isna()]
+    status_values = df['Status'].fillna('').astype(str).str.strip().str.lower()
+    already_done = {'sent', 'messaged', 'dm_sent', 'message_sent'}
+    unsent = df[~status_values.isin(already_done)]
     
     profiles = []
     for _, row in unsent.head(limit).iterrows():
@@ -108,7 +136,18 @@ def update_excel_status(excel_path, df, row_index, status, delivered=''):
     df.at[row_index, 'Status'] = status
     if delivered:
         df.at[row_index, 'Delivered'] = delivered
-    df.to_excel(excel_path, index=False)
+    directory = os.path.dirname(os.path.abspath(excel_path))
+    fd, temp_path = tempfile.mkstemp(prefix='.linkedin-', suffix='.xlsx', dir=directory)
+    os.close(fd)
+    try:
+        df.to_excel(temp_path, index=False)
+        os.replace(temp_path, excel_path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def setup_driver(headless=True):
@@ -123,8 +162,12 @@ def setup_driver(headless=True):
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     options.add_experimental_option('excludeSwitches', ['enable-automation'])
     options.add_experimental_option('useAutomationExtension', False)
-    
-    driver = webdriver.Chrome(options=options)
+
+    try:
+        driver = webdriver.Chrome(options=options)
+    except Exception:
+        driver = webdriver.Chrome()
+
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
