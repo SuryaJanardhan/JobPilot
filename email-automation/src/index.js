@@ -1,3 +1,4 @@
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const { loadUnsentEmails } = require("../scripts/phase1");
 const { prepareBatches } = require("../scripts/phase2");
 const { sendEmails } = require("../scripts/phase3");
