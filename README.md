@@ -15,9 +15,10 @@ The goal is simple: save manual effort and keep your applications moving every d
 
 ### 1) Email Campaign (`email-automation/src/index.js`)
 - Reads unsent contacts from Google Sheets.
-- Generates cold-email subject/body variants using Groq AI.
-- Sends emails in batches via Gmail SMTP.
-- Marks sent rows in the sheet.
+- Scrapes the recruiter's company homepage in parallel to gather context.
+- Generates personalized cold-email bodies in batches of 10 using Groq AI (`llama-3.3-70b-versatile`) to reference company context.
+- Automatically falls back to a witty, tech-themed template if scraping fails or the Groq key is missing.
+- Sends emails via Gmail SMTP, updates Google Sheets, and mails a daily run summary report tracking scraping success rates.
 
 ### 2) Delivery Verification (`email-automation/scripts/phase5.js`)
 - Checks sent emails and bounce notifications using IMAP.
@@ -32,20 +33,12 @@ The goal is simple: save manual effort and keep your applications moving every d
 
 ### 4) Daily Job Hunter (`web-job-hunter/index.js`)
 - Reads company domains from your target sheet.
-- Scrapes careers/job pages aggressively.
-- Filters jobs for:
-  - resume alignment,
-  - fresher-friendly roles,
-  - internship + entry-level full-time.
-- Stops at 10 unique valid jobs (or timeout).
-- Updates the sheet columns:
-  - `Domains`
-  - `Valid Domain`
-  - `scrapped at`
-  - `Total found jobs count`
-  - `Alligned jobs count`
-  - `Email sent with links`
-- Emails the 10 links with one-line job summaries.
+- Runs a single-pass scrape loop over each domain to prevent infinite loops.
+- Scrapes careers/job pages and gathers candidates.
+- **Batch LLM Alignment**: Pre-filters listings and calls the Groq LLM in a single batch to verify if jobs align with your resume skills (Full Stack, Node, React, Python, AI/ML, APIs), fresher suitability (0-2 years), and India eligibility (hybrid/remote).
+- Falls back to keyword heuristics if the LLM key is missing.
+- Batch updates Google Sheets at the end of the run to preserve Sheets write quotas.
+- Emails you the aligned job links (internship/FTE) with one-line summaries.
 
 ## Project Structure
 
@@ -101,6 +94,9 @@ JOB_SHEET_LINK=https://docs.google.com/spreadsheets/d/.../edit?gid=0#gid=0
 TARGET_JOBS=10
 MAX_RUN_MINUTES=120
 JOB_HUNTER_DRY_RUN=0
+JOB_HUNTER_MAX_PAGES=40      # Max pages to crawl per domain (default 40, set lower e.g. 2 for test runs)
+JOB_FETCH_RETRIES=3          # HTTP fetch attempt limit (default 3)
+JOB_FETCH_DELAY_MS=450       # Delay between successive requests to prevent rate blocks
 ```
 
 Place the Google service account JSON where each app expects it:
