@@ -40,6 +40,23 @@ async function waitForQuotaReset() {
   resetQuotaIfNewMinute();
 }
 
+function getServiceAccountPath() {
+  const possiblePaths = [
+    path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "youtube-comments-468405-69c215cd5075.json"),
+    path.join(__dirname, "..", "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "..", "youtube-comments-468405-69c215cd5075.json"),
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE
+  ];
+  for (const p of possiblePaths) {
+    if (p && fs.existsSync(p)) {
+      console.log(`🔑 Using service account file: ${p}`);
+      return p;
+    }
+  }
+  return path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json");
+}
+
 const SHEET_LINK =
   process.env.JOB_SHEET_LINK ||
   "https://docs.google.com/spreadsheets/d/1DvNSIB_M9yMx6u3Fh2wzdzRpZ_toJmaIwfrelnwP6Ts/edit?gid=0#gid=0";
@@ -49,9 +66,7 @@ const DRY_RUN = process.env.JOB_HUNTER_DRY_RUN === "1";
 const RECIPIENT = process.env.JOB_EMAIL_RECIPIENT || "chintalajanardhan2004@gmail.com";
 const FETCH_RETRIES = Number(process.env.JOB_FETCH_RETRIES || 3);
 const FETCH_DELAY_MS = Number(process.env.JOB_FETCH_DELAY_MS || 450);
-const SERVICE_ACCOUNT_FILE =
-  process.env.GOOGLE_SERVICE_ACCOUNT_FILE ||
-  path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json");
+const SERVICE_ACCOUNT_FILE = getServiceAccountPath();
 
 const REQUIRED_HEADERS = [
   "Domains",
@@ -559,18 +574,34 @@ function parseSitemapUrls(xml) {
 
 function isBlockedPageContent(text) {
   const lc = (text || "").toLowerCase();
-  const blockedSignals = [
-    "access denied",
-    "are you a robot",
-    "captcha",
-    "forbidden",
-    "temporarily unavailable",
-    "request blocked",
-    "security check",
-    "cloudflare",
-    "akamai",
-  ];
-  return blockedSignals.some((s) => lc.includes(s));
+  
+  // Check title for block/challenge signals
+  const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch ? titleMatch[1].toLowerCase() : "";
+  
+  if (title.includes("access denied") || 
+      title.includes("attention required") || 
+      title.includes("security check") || 
+      title.includes("checking your browser") || 
+      title.includes("just a moment") ||
+      title.includes("captcha")) {
+    return true;
+  }
+  
+  // Check for Cloudflare challenge markers in body
+  if (lc.includes("cf-challenge-error") || 
+      (lc.includes("ray id:") && lc.includes("cloudflare") && (lc.includes("captcha") || lc.includes("enable javascript")))) {
+    return true;
+  }
+  
+  // Check for generic robot/block messages in body
+  if (lc.includes("please enable js and disable any ad-blockers") || 
+      lc.includes("are you a robot?") ||
+      lc.includes("blocked by cloudflare")) {
+    return true;
+  }
+  
+  return false;
 }
 
 function isFresherFriendly(text) {
@@ -627,7 +658,8 @@ async function scrapeDomain(domain) {
     } catch {}
   }
 
-  while (queue.length > 0 && visited.size < 40) {
+  const maxPages = Number(process.env.JOB_HUNTER_MAX_PAGES || 40);
+  while (queue.length > 0 && visited.size < maxPages) {
     const url = queue.shift();
     const n = normalizeUrl(url);
     if (!n || visited.has(n)) continue;
@@ -806,6 +838,33 @@ async function sendJobsEmail(jobs) {
   return true;
 }
 
+async function updateDomainRowsBatch(sheets, spreadsheetId, sheetTitle, updates) {
+  const data = updates.map((update) => ({
+    range: `${sheetTitle}!B${update.rowNumber}:F${update.rowNumber}`,
+    values: [
+      [
+        update.stats.validDomain ? "yes" : "no",
+        update.stats.scrappedAt,
+        String(update.stats.totalFound),
+        String(update.stats.alignedCount),
+        update.stats.emailSent,
+      ],
+    ],
+  }));
+
+  if (data.length > 0) {
+    await writeSheetValues(() =>
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: "RAW",
+          data,
+        },
+      }),
+    );
+  }
+}
+
 async function run() {
   const started = Date.now();
   const runDeadline = started + MAX_RUN_MINUTES * 60 * 1000;
@@ -819,81 +878,83 @@ async function run() {
     throw new Error("No domains found in sheet column A");
   }
 
+  console.log(`Loaded ${domains.length} domains to process`);
+
   const selected = new Map();
   const domainStats = new Map();
 
-  while (
-    selected.size < TARGET_JOBS &&
-    Date.now() < runDeadline
-  ) {
-    let madeProgress = false;
-    for (const domainRow of domains) {
-      if (selected.size >= TARGET_JOBS) break;
-      if (Date.now() >= runDeadline) break;
-      const domain = normalizeDomain(domainRow.domain);
-      const now = new Date().toISOString();
-
-      let result;
-      try {
-        result = await scrapeDomain(domain);
-      } catch {
-        result = { validDomain: false, totalFound: 0, aligned: [] };
-      }
-
-      domainStats.set(domainRow.rowNumber, {
-        validDomain: result.validDomain,
-        scrappedAt: now,
-        totalFound: result.totalFound,
-        alignedCount: result.aligned.length,
-        emailSent: "no",
-      });
-
-      for (const job of result.aligned) {
-        if (selected.size >= TARGET_JOBS) break;
-        if (!selected.has(job.url)) {
-          selected.set(job.url, { ...job, domain });
-          madeProgress = true;
-        }
-      }
-
-      await updateDomainRow(
-        sheets,
-        spreadsheetId,
-        sheetTitle,
-        domainRow.rowNumber,
-        domainStats.get(domainRow.rowNumber),
-      );
+  // Scrape each domain exactly once
+  for (const domainRow of domains) {
+    if (selected.size >= TARGET_JOBS) {
+      console.log(`Target of ${TARGET_JOBS} jobs reached, stopping scraping.`);
+      break;
+    }
+    if (Date.now() >= runDeadline) {
+      console.log("Deadline reached, stopping scraping.");
+      break;
     }
 
-    if (!madeProgress) {
-      const remainingMs = runDeadline - Date.now();
-      if (remainingMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, Math.min(60000, remainingMs)));
+    const domain = normalizeDomain(domainRow.domain);
+    const now = new Date().toISOString();
+    console.log(`[Job Hunter] Scraping domain: ${domain}...`);
+
+    let result;
+    try {
+      result = await scrapeDomain(domain);
+    } catch (err) {
+      console.error(`Error scraping domain ${domain}:`, err.message);
+      result = { validDomain: false, totalFound: 0, aligned: [] };
+    }
+
+    const stats = {
+      validDomain: result.validDomain,
+      scrappedAt: now,
+      totalFound: result.totalFound,
+      alignedCount: result.aligned.length,
+      emailSent: "no",
+    };
+
+    domainStats.set(domainRow.rowNumber, stats);
+
+    for (const job of result.aligned) {
+      if (selected.size >= TARGET_JOBS) break;
+      if (!selected.has(job.url)) {
+        selected.set(job.url, { ...job, domain });
       }
     }
   }
 
   const pickedJobs = Array.from(selected.values()).slice(0, TARGET_JOBS);
-  const sent =
-    pickedJobs.length === TARGET_JOBS ? await sendJobsEmail(pickedJobs) : false;
+  
+  // Send email if we found ANY aligned jobs (rather than strictly requiring TARGET_JOBS)
+  let sent = false;
+  if (pickedJobs.length > 0) {
+    console.log(`Sending email for ${pickedJobs.length} picked jobs...`);
+    sent = await sendJobsEmail(pickedJobs);
+  } else {
+    console.log("No aligned jobs found, skipping email.");
+  }
 
+  // Construct status updates for all processed domains
+  const updates = [];
   for (const domainRow of domains) {
-    if (Date.now() >= runDeadline) break;
-    const prev = domainStats.get(domainRow.rowNumber);
-    if (!prev) continue;
-    const patch = {
-      ...prev,
-      emailSent: sent
-        ? `yes (${new Date().toISOString()})`
-        : `no (${pickedJobs.length}/${TARGET_JOBS})`,
-    };
-    await updateDomainRow(
-      sheets,
-      spreadsheetId,
-      sheetTitle,
-      domainRow.rowNumber,
-      patch,
-    );
+    const stats = domainStats.get(domainRow.rowNumber);
+    if (!stats) continue;
+
+    stats.emailSent = sent
+      ? `yes (${new Date().toISOString()})`
+      : `no (${pickedJobs.length}/${TARGET_JOBS})`;
+
+    updates.push({
+      rowNumber: domainRow.rowNumber,
+      stats,
+    });
+  }
+
+  // Perform a single batch update to Google Sheets to conserve API quota
+  if (updates.length > 0) {
+    console.log(`Updating sent status for ${updates.length} rows in Google Sheets...`);
+    await updateDomainRowsBatch(sheets, spreadsheetId, sheetTitle, updates);
   }
 
   console.log(
@@ -901,7 +962,17 @@ async function run() {
   );
 }
 
-run().catch((err) => {
-  console.error("web-job-hunter failed:", err.message);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== "test") {
+  run().catch((err) => {
+    console.error("web-job-hunter failed:", err.message);
+    process.exit(1);
+  });
+} else {
+  module.exports = {
+    normalizeDomain,
+    scrapeDomain,
+    sendJobsEmail,
+    TARGET_JOBS,
+    run
+  };
+}

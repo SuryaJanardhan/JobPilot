@@ -1,5 +1,23 @@
 const { google } = require("googleapis");
 const path = require("path");
+const fs = require("fs");
+
+function getServiceAccountPath() {
+  const possiblePaths = [
+    path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "youtube-comments-468405-69c215cd5075.json"),
+    path.join(__dirname, "..", "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "..", "youtube-comments-468405-69c215cd5075.json"),
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE
+  ];
+  for (const p of possiblePaths) {
+    if (p && fs.existsSync(p)) {
+      console.log(`🔑 Using service account file: ${p}`);
+      return p;
+    }
+  }
+  return path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json");
+}
 
 /**
  * Phase 1: Load and filter unsent emails from Google Sheets
@@ -14,11 +32,7 @@ async function loadUnsentEmails(sheetLink) {
 
     // Authenticate with service account
     const auth = new google.auth.GoogleAuth({
-      keyFile: path.join(
-        __dirname,
-        "..",
-        "youtube-comments-468405-69c215cd5075.json",
-      ),
+      keyFile: getServiceAccountPath(),
       scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
     });
 

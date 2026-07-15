@@ -7,7 +7,8 @@ require("dotenv").config();
  * Phase 3: Send emails in batches
  * @returns {Object} Object containing sent emails and message info
  */
-async function sendEmails(batch, subjectTemplate, bodyTemplate, resumeLink) {
+async function sendEmails(batch, subjectTemplate, bodyTemplate, resumeLink, personalizedMap = null) {
+
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: {
@@ -21,14 +22,22 @@ async function sendEmails(batch, subjectTemplate, bodyTemplate, resumeLink) {
 
   const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
 
-  // Compile templates
+  // Compile templates as fallback
   const renderSubject = compileTemplate(subjectTemplate);
   const renderBody = compileTemplate(bodyTemplate + "\n\nResume: {{resumeLink}}");
 
   for (const recipient of batch) {
     const data = { ...recipient, resumeLink };
-    const personalizedSubject = renderSubject(data);
-    const personalizedBody = renderBody(data);
+    let personalizedSubject, personalizedBody;
+
+    const emailKey = recipient.email.toLowerCase().trim();
+    if (personalizedMap && personalizedMap[emailKey]) {
+      personalizedSubject = personalizedMap[emailKey].subject;
+      personalizedBody = personalizedMap[emailKey].body;
+    } else {
+      personalizedSubject = renderSubject(data);
+      personalizedBody = renderBody(data);
+    }
 
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -39,7 +48,7 @@ async function sendEmails(batch, subjectTemplate, bodyTemplate, resumeLink) {
 
     try {
       if (isDryRun) {
-        console.log(`DRY RUN: would send to ${recipient.email} subject="${personalizedSubject.substring(0,50)}..."`);
+        console.log(`DRY RUN: would send to ${recipient.email} subject="${personalizedSubject.substring(0, 50)}..."`);
       } else {
         const info = await transporter.sendMail(mailOptions);
         if (info && info.messageId) messageIds.push(info.messageId);
@@ -61,7 +70,7 @@ async function sendEmails(batch, subjectTemplate, bodyTemplate, resumeLink) {
       from: process.env.EMAIL_USER,
       to: process.env.EMAIL_USER,
       subject: `Batch send report: ${sentEmails.length}/${batch.length} sent`,
-      text: `Sent to:\n${sentEmails.join("\n")}\n\nSubject (sample): ${subjectTemplate.substring(0,80)}`,
+      text: `Sent to:\n${sentEmails.join("\n")}\n\nSubject (sample): ${subjectTemplate.substring(0, 80)}`,
     };
     if (isDryRun) {
       console.log("DRY RUN: would send owner report", ownerMsg);

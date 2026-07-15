@@ -1,5 +1,23 @@
 const { google } = require("googleapis");
 const path = require("path");
+const fs = require("fs");
+
+function getServiceAccountPath() {
+  const possiblePaths = [
+    path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "youtube-comments-468405-69c215cd5075.json"),
+    path.join(__dirname, "..", "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "..", "youtube-comments-468405-69c215cd5075.json"),
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE
+  ];
+  for (const p of possiblePaths) {
+    if (p && fs.existsSync(p)) {
+      console.log(`🔑 Using service account file: ${p}`);
+      return p;
+    }
+  }
+  return path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json");
+}
 
 // Google Sheets quota: 60 write requests per minute
 // We'll stop at 50% = 30 requests per minute to be safe
@@ -46,11 +64,7 @@ async function updateSentStatus(sheetLink, sentEmails) {
 
     // Authenticate with service account (needs write access)
     const auth = new google.auth.GoogleAuth({
-      keyFile: path.join(
-        __dirname,
-        "..",
-        "seismic-rarity-468405-j1-cd12fe29c298.json",
-      ),
+      keyFile: getServiceAccountPath(),
       scopes: ["https://www.googleapis.com/auth/spreadsheets"],
     });
 
