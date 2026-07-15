@@ -2,7 +2,12 @@ const fs = require("fs");
 const path = require("path");
 const { google } = require("googleapis");
 const nodemailer = require("nodemailer");
+const Groq = require("groq-sdk");
 require("dotenv").config();
+
+const groq = process.env.GROQ_API_KEY
+  ? new Groq({ apiKey: process.env.GROQ_API_KEY })
+  : null;
 
 // Google Sheets quota protection
 const QUOTA_LIMIT_PER_MINUTE = 60;
@@ -621,6 +626,111 @@ function extractTitle(html) {
   return titleMatch ? stripHtml(titleMatch[1]).slice(0, 140) : "";
 }
 
+async function filterAlignedJobsWithLLM(candidates) {
+  if (candidates.length === 0) return [];
+  if (!groq) {
+    console.log("⚠️ Groq client not initialized (missing GROQ_API_KEY). Using heuristic fallback.");
+    return candidates.filter(j => 
+      j.score >= 2 && 
+      j.fresherFriendly && 
+      j.techAligned && 
+      j.indiaEligible && 
+      (j.roleType === "internship" || j.roleType === "fte")
+    );
+  }
+
+  const jobListData = candidates.map(c => ({
+    title: c.title,
+    url: c.url,
+    snippet: c.snippet.substring(0, 500)
+  }));
+
+  const prompt = `You are an expert technical recruiter analyzing job listings for a candidate: Surya Janardhan.
+Candidate Details:
+- Name: Surya Janardhan
+- Key Skills: Full Stack, Node.js, React, JavaScript/TypeScript, Python, Java, AI/ML, LLM applications (RAG, LangChain, LangGraph), APIs.
+- Seeking: SDE / Full Stack / AI / Software Engineering intern or entry-level (fresher) roles.
+- Eligibility: Located in India (hybrid/onsite India or remote).
+
+Evaluate if each of the following jobs is a strong match for this candidate.
+Requirements:
+1. Must be a software development or AI/ML technical engineering role.
+2. Must be an internship or entry-level/fresher role (maximum 2 years experience required). If it requires senior, lead, principal, or 3+ years of experience, reject it.
+3. Must be open to candidates in India (remote or onsite/hybrid in India). If it explicitly requires being onsite in USA/Europe/UK and does not allow remote/India onsite, reject it.
+
+Evaluate the following jobs:
+${JSON.stringify(jobListData, null, 2)}
+
+Return ONLY a valid JSON object in this exact format (no markdown, no code blocks):
+{
+  "evaluations": [
+    {
+      "url": "job-url",
+      "isAligned": true/false,
+      "roleType": "internship" or "fte",
+      "locationTag": "remote-india" or "india-onsite/hybrid" or "non-india",
+      "reasoning": "brief explanation"
+    }
+  ]
+}
+`;
+
+  try {
+    console.log(`🧠 Calling Groq LLM to check alignment for ${candidates.length} candidate jobs in a single batch...`);
+    const completion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.2,
+      max_tokens: 2000,
+      response_format: { type: "json_object" },
+    });
+
+    const responseText = completion.choices[0]?.message?.content || "";
+    const parsed = JSON.parse(responseText);
+
+    if (!parsed || !parsed.evaluations || !Array.isArray(parsed.evaluations)) {
+      throw new Error("Invalid response format from LLM");
+    }
+
+    const evalMap = new Map();
+    for (const item of parsed.evaluations) {
+      evalMap.set(item.url, item);
+    }
+
+    const aligned = [];
+    for (const c of candidates) {
+      const evaluation = evalMap.get(c.url);
+      if (evaluation && evaluation.isAligned) {
+        aligned.push({
+          ...c,
+          roleType: evaluation.roleType || c.roleType,
+          locationTag: evaluation.locationTag || c.locationTag,
+          score: 5,
+          fresherFriendly: true,
+          techAligned: true,
+          indiaEligible: true,
+          llmVerified: true,
+          reasoning: evaluation.reasoning
+        });
+      }
+    }
+
+    console.log(`   ✅ LLM verified ${aligned.length}/${candidates.length} jobs as aligned.`);
+    return aligned;
+
+  } catch (error) {
+    console.error("❌ LLM job alignment check failed:", error.message);
+    console.log("⚠️ Falling back to keyword heuristics...");
+    return candidates.filter(j => 
+      j.score >= 2 && 
+      j.fresherFriendly && 
+      j.techAligned && 
+      j.indiaEligible && 
+      (j.roleType === "internship" || j.roleType === "fte")
+    );
+  }
+}
+
 async function scrapeDomain(domain) {
   const cleanDomain = normalizeDomain(domain);
   if (!cleanDomain) {
@@ -760,19 +870,15 @@ async function scrapeDomain(domain) {
     });
   }
 
-  const aligned = enriched
-    .filter(
-      (j) =>
-        j.score >= 2 &&
-        j.fresherFriendly &&
-        j.techAligned &&
-        j.indiaEligible &&
-        (j.roleType === "internship" || j.roleType === "fte") &&
-        !!j.finalApplyUrl &&
-        looksLikeDirectApplyUrl(j.finalApplyUrl) &&
-        isLikelyJobPage(j.finalApplyUrl, j.title, j.snippet),
-    )
-    .sort((a, b) => b.score - a.score);
+  const candidateJobs = enriched.filter(
+    (j) =>
+      j.score >= 1 &&
+      !!j.finalApplyUrl &&
+      looksLikeDirectApplyUrl(j.finalApplyUrl) &&
+      isLikelyJobPage(j.finalApplyUrl, j.title, j.snippet),
+  );
+
+  const aligned = await filterAlignedJobsWithLLM(candidateJobs);
 
   return {
     validDomain: visited.size > 0,

@@ -1,4 +1,6 @@
-# GetJob Automation Suite
+# JobPilot
+
+## GetJob Automation Suite
 
 This repository automates your job outreach in four parts:
 
