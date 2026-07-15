@@ -29,7 +29,8 @@ Rules:
 4. Maintain the key points in the body: SDE/Full Stack/AI roles, resume link mention, eager to contribute
 5. The tone should feel genuine and direct - not salesy, not overly formal
 6. Do NOT use any special characters that could break JSON parsing
-7. Return ONLY the JSON object, nothing else`;
+7. Return ONLY the JSON object, nothing else
+8. Every email body must start with or include the statement: "I'm Surya Janardhan, currently working at TCS Hyderabad as a System Administrator..."`;
 
   try {
     if (!groq) {
@@ -83,6 +84,7 @@ Rules:
 function createFallbackVariants(baseSubject, baseBody) {
   const resumeLink = baseBody.match(/Resume: (https?:\/\/\S+)/)?.[1] ?? "";
   const signature = "Thanks & Regards,\nSurya Janardhan\n+91 93914 69392";
+  const intro = "I'm Surya Janardhan, currently working at TCS Hyderabad as a System Administrator.";
 
   const subjects = [
     "Application for SDE / Full Stack / AI Intern Role",
@@ -92,12 +94,16 @@ function createFallbackVariants(baseSubject, baseBody) {
     "SDE / Full Stack / AI Intern - Application",
   ];
 
+  const cleanBaseBody = baseBody.toLowerCase().includes("currently working")
+    ? baseBody
+    : `${intro} ${baseBody}`;
+
   const bodies = [
-    baseBody,
-    `Hi,\n\nI debug code for fun, so I figured applying here was the next logical step. I am looking for SDE / Full Stack / AI intern roles and would love to contribute to your team.\n\nResume: ${resumeLink}\n\n${signature}`,
-    `Hi,\n\nThey say every bug is just an undocumented feature - I am here to fix both. Sharing my resume for any SDE / Full Stack / AI intern openings you may have.\n\nResume: ${resumeLink}\n\n${signature}`,
-    `Hi,\n\nI compile well under pressure and am eager to contribute to real projects. Please find my resume for SDE / Full Stack / AI intern roles.\n\nResume: ${resumeLink}\n\n${signature}`,
-    `Hi,\n\nI have zero exceptions when it comes to learning fast. Looking for SDE / Full Stack / AI intern opportunities - resume linked below.\n\nResume: ${resumeLink}\n\n${signature}`,
+    cleanBaseBody,
+    `Hi,\n\n${intro} I debug code for fun, so I figured applying here was the next logical step. I am looking for SDE / Full Stack / AI intern roles and would love to contribute.\n\nResume: ${resumeLink}\n\n${signature}`,
+    `Hi,\n\n${intro} They say every bug is just an undocumented feature - I am here to fix both. Sharing my resume for any SDE / Full Stack / AI intern openings.\n\nResume: ${resumeLink}\n\n${signature}`,
+    `Hi,\n\n${intro} I compile well under pressure and am eager to contribute to real projects. Please find my resume for SDE / Full Stack / AI intern roles.\n\nResume: ${resumeLink}\n\n${signature}`,
+    `Hi,\n\n${intro} I have zero exceptions when it comes to learning fast. Looking for SDE / Full Stack / AI intern opportunities - resume linked below.\n\nResume: ${resumeLink}\n\n${signature}`,
   ];
 
   return { subjects, bodies };
@@ -116,6 +122,7 @@ Generate a personalized cold email for each of the recipients.
 
 Resume details for reference:
 - Candidate name: Surya Janardhan
+- Current status: Working at TCS Hyderabad as a System Administrator
 - Key skills: Full Stack development, Node.js, React, JavaScript/TypeScript, Python, Java, AI/ML, LLM applications (RAG, LangChain, LangGraph), APIs.
 - Seeking: SDE / Full Stack / AI intern roles.
 - Resume link: ${resumeLink}
@@ -129,6 +136,7 @@ For each recipient:
 3. Ensure every body clearly displays the resume link: "Resume: ${resumeLink}" or mentions it naturally.
 4. Keep the tone friendly, confident, and direct. Do not sound salesy or overly formal.
 5. Do NOT include placeholders (like [Company Name] or [Job Title]). Use the actual data provided. If info is missing or generic, write a general, witty body.
+6. Every email body must start with or include the statement: "I'm Surya Janardhan, currently working at TCS Hyderabad as a System Administrator..." (or a naturally flowing equivalent).
 
 Input data (JSON array of recruiter contexts):
 ${JSON.stringify(batchContexts, null, 2)}
