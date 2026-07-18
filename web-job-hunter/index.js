@@ -68,7 +68,11 @@ const SHEET_LINK =
   "https://docs.google.com/spreadsheets/d/1DvNSIB_M9yMx6u3Fh2wzdzRpZ_toJmaIwfrelnwP6Ts/edit?gid=0#gid=0";
 const TARGET_JOBS = Number(process.env.TARGET_JOBS || 10);
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 120);
-const DRY_RUN = process.env.JOB_HUNTER_DRY_RUN === "1";
+const DRY_RUN =
+  process.env.JOB_HUNTER_DRY_RUN === "1" ||
+  process.env.JOB_HUNTER_DRY_RUN === "true" ||
+  process.env.DRY_RUN === "true" ||
+  process.env.DRY_RUN === "1";
 const RECIPIENT = process.env.JOB_EMAIL_RECIPIENT || "chintalajanardhan2004@gmail.com";
 const FETCH_RETRIES = Number(process.env.JOB_FETCH_RETRIES || 3);
 const FETCH_DELAY_MS = Number(process.env.JOB_FETCH_DELAY_MS || 450);
@@ -246,6 +250,10 @@ async function getFirstSheetTitle(sheets, spreadsheetId) {
 }
 
 async function ensureHeaders(sheets, spreadsheetId, sheetTitle) {
+  if (DRY_RUN) {
+    console.log("DRY RUN: skipping ensureHeaders update");
+    return;
+  }
   await writeSheetValues(() =>
     sheets.spreadsheets.values.update({
       spreadsheetId,
@@ -737,155 +745,82 @@ async function scrapeDomain(domain) {
   if (!cleanDomain) {
     return { validDomain: false, totalFound: 0, aligned: [] };
   }
-  const seedUrls = [
-    `https://${cleanDomain}/careers`,
-    `https://${cleanDomain}/career`,
-    `https://${cleanDomain}/jobs`,
-    `https://careers.${cleanDomain}`,
-    `https://jobs.${cleanDomain}`,
-    `https://${cleanDomain}/join-us`,
-    `https://${cleanDomain}/careers/jobs`,
-    `https://${cleanDomain}`,
-  ];
 
-  const queue = [...seedUrls];
-  const visited = new Set();
-  const candidates = new Map();
-
-  // Stage 1: Seed from sitemap endpoints for deeper but targeted discovery.
-  const sitemapUrls = [
-    `https://${cleanDomain}/sitemap.xml`,
-    `https://${cleanDomain}/sitemap_index.xml`,
-  ];
-  for (const sm of sitemapUrls) {
-    try {
-      const smRes = await fetchWithTimeout(sm, 10000);
-      if (!smRes.ok) continue;
-      const xml = await smRes.text();
-      const urls = parseSitemapUrls(xml).filter((u) => looksLikeJobUrl(u, ""));
-      for (const u of urls.slice(0, 120)) {
-        if (!visited.has(u) && !isBlockedNonJobUrl(u, "")) queue.push(u);
-      }
-    } catch {}
+  if (!groq) {
+    console.log("⚠️ Groq client not initialized. Cannot perform Groq search. Returning empty result.");
+    return { validDomain: false, totalFound: 0, aligned: [] };
   }
 
-  const maxPages = Number(process.env.JOB_HUNTER_MAX_PAGES || 40);
-  while (queue.length > 0 && visited.size < maxPages) {
-    const url = queue.shift();
-    const n = normalizeUrl(url);
-    if (!n || visited.has(n)) continue;
-    visited.add(n);
+  const prompt = `You are an expert technical job hunter. Use your built-in web search tool to search for active SDE, software engineering, Full Stack, Frontend, Backend, or AI/ML job openings for the company associated with the domain name "${cleanDomain}".
+Search specifically for internship, fresher, entry-level, graduate, or junior (0-2 years of experience) positions open in India (hybrid, onsite, or remote).
 
-    let res;
-    try {
-      res = await fetchWithTimeout(url, 10000);
-    } catch {
-      continue;
+For each matching job opening found on their careers page (e.g. Greenhouse, Lever, Workday, or their own site), extract:
+1. title: The exact title of the job.
+2. url: The direct link to apply.
+3. locationTag: "remote-india" or "india-onsite/hybrid".
+4. roleType: "internship" or "fte".
+5. snippet: A one-sentence description of what the job entails.
+
+Return ONLY a valid JSON object in this exact format (no markdown, no code blocks, no other text):
+{
+  "jobs": [
+    {
+      "title": "Software Engineer Intern",
+      "url": "https://company.lever.co/jobs/123",
+      "locationTag": "remote-india",
+      "roleType": "internship",
+      "snippet": "Develop backend APIs in Node.js and Python."
     }
+  ]
+}
+`;
 
-    if (!res.ok) continue;
-    const contentType = res.headers.get("content-type") || "";
-    if (!contentType.includes("text/html")) continue;
-
-    let html = "";
-    try {
-      html = await res.text();
-    } catch {
-      continue;
-    }
-    if (isBlockedPageContent(html)) continue;
-
-    const pageTitle = extractTitle(html);
-    const links = extractLinks(html, res.url);
-    const atsLinks = extractAtsLinksFromHtml(html, res.url);
-
-    for (const ats of atsLinks) {
-      if (!visited.has(ats) && !isBlockedNonJobUrl(ats, "")) queue.push(ats);
-      if (!candidates.has(ats) && looksLikeJobUrl(ats, "")) {
-        candidates.set(ats, {
-          url: ats,
-          title: pageTitle || "Job Opening",
-          sourcePage: n,
-        });
-      }
-    }
-
-    for (const link of links) {
-      const norm = normalizeUrl(link.url);
-      if (!norm) continue;
-      const sameRoot =
-        norm.includes(cleanDomain) ||
-        /workdayjobs|greenhouse|lever\.co|smartrecruiters|ashby/i.test(norm);
-
-      if (!sameRoot) continue;
-      if (isBlockedNonJobUrl(norm, link.text)) continue;
-
-      if (looksLikeJobUrl(norm, link.text)) {
-        const key = norm;
-        if (!candidates.has(key)) {
-          candidates.set(key, {
-            url: norm,
-            title: link.text || pageTitle || "Job Opening",
-            sourcePage: n,
-          });
-        }
-      }
-
-      if (
-        queue.length < 120 &&
-        !visited.has(norm) &&
-        looksLikeJobUrl(norm, link.text) &&
-        !isBlockedNonJobUrl(norm, link.text)
-      ) {
-        queue.push(norm);
-      }
-    }
-    await sleep(FETCH_DELAY_MS + Math.floor(Math.random() * 400));
-  }
-
-  const enriched = [];
-  for (const item of candidates.values()) {
-    let jobHtml = "";
-    let title = item.title;
-    let snippet = "";
-    try {
-      const jobRes = await fetchWithTimeout(item.url, 9000);
-      if (jobRes.ok && (jobRes.headers.get("content-type") || "").includes("html")) {
-        jobHtml = await jobRes.text();
-        if (isBlockedPageContent(jobHtml)) continue;
-        title = extractTitle(jobHtml) || title;
-        snippet = stripHtml(jobHtml).slice(0, 900);
-      }
-    } catch {}
-
-    enriched.push({
-      ...item,
-      title: title || "Job Opening",
-      snippet,
-      score: scoreAlignment(`${title} ${snippet}`),
-      roleType: classifyRoleType(`${title} ${snippet}`),
-      fresherFriendly: isFresherFriendly(`${title} ${snippet}`),
-      techAligned: isTechAligned(`${title} ${snippet}`),
-      ...getLocationEligibility(`${title} ${snippet} ${item.url}`),
-      finalApplyUrl: findFinalApplyUrl(jobHtml, item.url),
+  try {
+    console.log(`🧠 Querying groq/compound to search and find aligned jobs for ${cleanDomain}...`);
+    const completion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "groq/compound",
+      temperature: 0.2,
+      max_tokens: 3000,
+      response_format: { type: "json_object" },
     });
+
+    const responseText = completion.choices[0]?.message?.content || "";
+    const parsed = JSON.parse(responseText);
+
+    if (!parsed || !parsed.jobs || !Array.isArray(parsed.jobs)) {
+      throw new Error("Invalid response format from LLM");
+    }
+
+    const aligned = parsed.jobs.map(j => ({
+      title: j.title || "Job Opening",
+      url: j.url,
+      locationTag: j.locationTag || "india",
+      roleType: j.roleType || "internship",
+      snippet: j.snippet || "",
+      score: 5,
+      fresherFriendly: true,
+      techAligned: true,
+      indiaEligible: true,
+      llmVerified: true,
+      reasoning: "Verified by Groq web search"
+    })).filter(j => j.url);
+
+    console.log(`   ✅ Groq web search found ${aligned.length} aligned jobs for ${cleanDomain}.`);
+    return {
+      validDomain: true,
+      totalFound: aligned.length,
+      aligned
+    };
+
+  } catch (error) {
+    console.error(`❌ Groq web search failed for ${cleanDomain}:`, error.message);
+    return {
+      validDomain: true,
+      totalFound: 0,
+      aligned: []
+    };
   }
-
-  const candidateJobs = enriched.filter(
-    (j) =>
-      j.score >= 1 &&
-      !!j.finalApplyUrl &&
-      looksLikeDirectApplyUrl(j.finalApplyUrl) &&
-      isLikelyJobPage(j.finalApplyUrl, j.title, j.snippet),
-  );
-
-  const aligned = await filterAlignedJobsWithLLM(candidateJobs);
-
-  return {
-    validDomain: visited.size > 0,
-    totalFound: enriched.length,
-    aligned,
-  };
 }
 
 function oneLine(job) {
@@ -893,6 +828,10 @@ function oneLine(job) {
 }
 
 async function updateDomainRow(sheets, spreadsheetId, sheetTitle, rowNumber, row) {
+  if (DRY_RUN) {
+    console.log(`DRY RUN: would update domain row ${rowNumber} to: valid=${row.validDomain}, scrappedAt=${row.scrappedAt}, found=${row.totalFound}, alignedCount=${row.alignedCount}, emailSent=${row.emailSent}`);
+    return;
+  }
   await writeSheetValues(() =>
     sheets.spreadsheets.values.update({
       spreadsheetId,
@@ -960,6 +899,11 @@ async function updateDomainRowsBatch(sheets, spreadsheetId, sheetTitle, updates)
   }));
 
   if (data.length > 0) {
+    if (DRY_RUN) {
+      console.log(`DRY RUN: would batch update ${data.length} rows in Google Sheets`);
+      console.log("DRY RUN data:", JSON.stringify(data, null, 2));
+      return;
+    }
     await writeSheetValues(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId,
@@ -975,12 +919,25 @@ async function updateDomainRowsBatch(sheets, spreadsheetId, sheetTitle, updates)
 async function run() {
   const started = Date.now();
   const runDeadline = started + MAX_RUN_MINUTES * 60 * 1000;
-  const sheets = await getSheetsClient();
-  const spreadsheetId = extractSpreadsheetId(SHEET_LINK);
-  const sheetTitle = await getFirstSheetTitle(sheets, spreadsheetId);
+  let sheets = null;
+  let spreadsheetId = "";
+  let sheetTitle = "";
+  let domains = [];
 
-  await ensureHeaders(sheets, spreadsheetId, sheetTitle);
-  const domains = await loadDomainRows(sheets, spreadsheetId, sheetTitle);
+  if (DRY_RUN && !fs.existsSync(SERVICE_ACCOUNT_FILE)) {
+    console.log("⚠️ [DRY RUN] Google service account credentials file not found. Using mock domains for job hunting.");
+    domains = [
+      { rowNumber: 2, domain: "i2t2.com" },
+      { rowNumber: 3, domain: "infotechsw.com" }
+    ];
+  } else {
+    sheets = await getSheetsClient();
+    spreadsheetId = extractSpreadsheetId(SHEET_LINK);
+    sheetTitle = await getFirstSheetTitle(sheets, spreadsheetId);
+    await ensureHeaders(sheets, spreadsheetId, sheetTitle);
+    domains = await loadDomainRows(sheets, spreadsheetId, sheetTitle);
+  }
+
   if (domains.length === 0) {
     throw new Error("No domains found in sheet column A");
   }

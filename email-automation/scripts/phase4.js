@@ -55,6 +55,11 @@ async function delay(ms) {
  * Phase 4: Update sent status in Google Sheets (with quota protection)
  */
 async function updateSentStatus(sheetLink, sentEmails) {
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun) {
+    console.log(`DRY RUN: skipping Google Sheets sent status update for ${sentEmails.length} emails`);
+    return;
+  }
   try {
     console.log("Updating sent status in Google Sheets...");
     console.log(`  [Quota] Max ${MAX_WRITES_PER_MINUTE} writes/minute (50% of limit)`);

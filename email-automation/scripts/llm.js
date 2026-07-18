@@ -117,8 +117,8 @@ function createFallbackVariants(baseSubject, baseBody) {
  */
 async function generateBatchPersonalizedEmails(batchContexts, resumeLink) {
   const prompt = `You are a witty, highly effective cold-email copywriter. You are helping Surya Janardhan apply for SDE / Full Stack / AI intern roles.
-You will be given a list of recipient contexts (recruiter email, domain, company description, scraping status, and available job openings).
-Generate a personalized cold email for each of the recipients.
+You will be given a list of recipient contexts (recruiter email, domain, status).
+For each recipient, use your built-in web search tool to search for what the company (associated with the domain name) does, their product, services, and engineering stack.
 
 Resume details for reference:
 - Candidate name: Surya Janardhan
@@ -129,13 +129,12 @@ Resume details for reference:
 
 For each recipient:
 1. Subject line: Keep it clean, normal, professional, and direct (under 60 characters). Do not use cheesy puns or clickbait in the subject. Example: "Application for SDE / AI Intern Role" or "SDE Intern Application".
-2. Email Body: Keep it very brief (max 3-4 lines). Make it engaging, direct, and tailormade based on their scraping status:
-   - If status is "careers_scraped" and a matching job opening is listed: Mention that you saw the specific role (e.g. "{Job Title}") and express your interest/fit, referencing its relevance to your skills.
-   - If status is "homepage_scraped": Personalize it by wittily referencing what the company does (from the description), and state that you'd love to contribute to their team as an SDE/Full Stack/AI intern.
-   - If status is "failed/public": Use a witty, general tech-themed cold email body (like "I debug code for fun..." or "I compile well under pressure...").
+2. Email Body: Keep it very brief (max 3-4 lines). Make it engaging, direct, and tailormade:
+   - If status is "domain_extracted": Use the search results to wittily reference their specific products, services, or stack, stating that you'd love to contribute to their team as an SDE/Full Stack/AI intern.
+   - If status is "failed/public" or the search returns no results, use a witty, general tech-themed cold email body (like "I debug code for fun..." or "I compile well under pressure...").
 3. Ensure every body clearly displays the resume link: "Resume: ${resumeLink}" or mentions it naturally.
 4. Keep the tone friendly, confident, and direct. Do not sound salesy or overly formal.
-5. Do NOT include placeholders (like [Company Name] or [Job Title]). Use the actual data provided. If info is missing or generic, write a general, witty body.
+5. Do NOT include placeholders (like [Company Name]). Use the actual company/domain names.
 6. Every email body must start with or include the statement: "I'm Surya Janardhan, currently working at TCS Hyderabad as a System Administrator..." (or a naturally flowing equivalent).
 
 Input data (JSON array of recruiter contexts):
@@ -164,7 +163,7 @@ Return ONLY a valid JSON object in this exact format (no markdown, no code block
           content: prompt,
         },
       ],
-      model: "llama-3.3-70b-versatile",
+      model: "groq/compound",
       temperature: 0.7,
       max_tokens: 4000,
       response_format: { type: "json_object" },

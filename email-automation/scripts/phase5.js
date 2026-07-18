@@ -1,9 +1,27 @@
 const { google } = require("googleapis");
 const nodemailer = require("nodemailer");
 const path = require("path");
+const fs = require("fs");
 const Imap = require("imap");
 const { simpleParser } = require("mailparser");
 require("dotenv").config();
+
+function getServiceAccountPath() {
+  const possiblePaths = [
+    path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "youtube-comments-468405-69c215cd5075.json"),
+    path.join(__dirname, "..", "..", "seismic-rarity-468405-j1-cd12fe29c298.json"),
+    path.join(__dirname, "..", "..", "youtube-comments-468405-69c215cd5075.json"),
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE
+  ];
+  for (const p of possiblePaths) {
+    if (p && fs.existsSync(p)) {
+      console.log(`🔑 Using service account file: ${p}`);
+      return p;
+    }
+  }
+  return path.join(__dirname, "..", "seismic-rarity-468405-j1-cd12fe29c298.json");
+}
 
 /**
  * Phase 5: Verify email delivery status after 20 minutes
@@ -105,6 +123,27 @@ function getImapConfig() {
  * Returns sent emails with their Message-IDs for tracking
  */
 async function readSentEmails(minutesBack = 35) {
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun && (!process.env.EMAIL_USER || !process.env.EMAIL_PASS)) {
+    console.log("⚠️ [DRY RUN] EMAIL_USER/EMAIL_PASS not configured. Returning mock sent emails.");
+    return [
+      {
+        messageId: "mock-message-id-1",
+        recipients: ["recruiter@stripe.com"],
+        failedRecipients: [],
+        subject: "Application for SDE Role",
+        date: new Date()
+      },
+      {
+        messageId: "mock-message-id-2",
+        recipients: ["careers@vercel.com"],
+        failedRecipients: [],
+        subject: "Application for SDE Role",
+        date: new Date()
+      }
+    ];
+  }
+
   console.log(`\n📤 Reading SENT folder (last ${minutesBack} minutes)...`);
 
   const sentMessages = []; // { messageId, recipients[], subject, date }
@@ -257,6 +296,15 @@ async function readBounceNotifications(
   emailsToCheck,
   minutesBack = 35,
 ) {
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun && (!process.env.EMAIL_USER || !process.env.EMAIL_PASS)) {
+    console.log("⚠️ [DRY RUN] EMAIL_USER/EMAIL_PASS not configured. Returning mock bounce notification.");
+    const mockFailed = new Map();
+    // Simulate one bounce for vercel.com
+    mockFailed.set("careers@vercel.com", "550 5.1.1 The email account that you tried to reach does not exist.");
+    return mockFailed;
+  }
+
   console.log(`\n📥 Reading INBOX for bounce notifications...`);
 
   const failedEmails = new Map(); // email -> error
@@ -403,12 +451,15 @@ async function readBounceNotifications(
 async function getRecentlySentEmails(sheetLink) {
   console.log("📋 Reading recently sent emails from Google Sheets...");
 
+  const keyFile = getServiceAccountPath();
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun && !fs.existsSync(keyFile)) {
+    console.log("⚠️ [DRY RUN] Google service account credentials file not found. Using mock emails to verify.");
+    return ["recruiter@stripe.com", "careers@vercel.com"];
+  }
+
   const auth = new google.auth.GoogleAuth({
-    keyFile: path.join(
-      __dirname,
-      "..",
-      "seismic-rarity-468405-j1-cd12fe29c298.json",
-    ),
+    keyFile,
     scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
   });
 
@@ -503,6 +554,12 @@ async function delay(ms) {
  * Update Google Sheet with error column for failed emails (with quota protection)
  */
 async function updateErrorColumn(sheetLink, failedEmails) {
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun) {
+    console.log(`DRY RUN: skipping Google Sheets error column updates for ${failedEmails.size} failed emails`);
+    return 0;
+  }
+
   if (failedEmails.size === 0) {
     console.log("\nNo failed emails to update in sheet");
     return 0;
@@ -516,11 +573,7 @@ async function updateErrorColumn(sheetLink, failedEmails) {
   const spreadsheetId = sheetLink.match(/\/d\/([a-zA-Z0-9-_]+)/)[1];
 
   const auth = new google.auth.GoogleAuth({
-    keyFile: path.join(
-      __dirname,
-      "..",
-      "seismic-rarity-468405-j1-cd12fe29c298.json",
-    ),
+    keyFile: getServiceAccountPath(),
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
@@ -585,15 +638,20 @@ async function updateErrorColumn(sheetLink, failedEmails) {
  * Send summary email
  */
 async function sendSummaryEmail(emailsChecked, failedEmails) {
-  console.log("\n📧 Sending summary email...");
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun) {
+    console.log("\n📧 [DRY RUN] Skipping summary email send.");
+  } else {
+    console.log("\n📧 Sending summary email...");
+  }
 
-  const transporter = nodemailer.createTransport({
+  const transporter = !isDryRun ? nodemailer.createTransport({
     service: "gmail",
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
-  });
+  }) : null;
 
   const totalSent = emailsChecked.length;
   const failedCount = failedEmails.size;
@@ -660,6 +718,12 @@ It doesn't guarantee the email reached their inbox (could be in spam).
 This is an automated delivery verification report.
 `;
 
+  if (isDryRun) {
+    console.log(`[DRY RUN] Would send summary email to chintalajanardhan2004@gmail.com with subject: "${subject}"`);
+    console.log(`[DRY RUN] Email Body:\n${body}`);
+    return;
+  }
+
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to: "chintalajanardhan2004@gmail.com",
@@ -675,7 +739,9 @@ This is an automated delivery verification report.
  */
 async function verifyDeliveryStatus() {
   const sheetLink =
-    "https://docs.google.com/spreadsheets/d/1bKIeZoQMOmIw9Te_zMSafZOYqUsF3s2MBAqgl7Vjnds/edit?gid=0#gid=0";
+    process.env.JOB_SHEET_LINK ||
+    process.env.EMAIL_SHEET_LINK ||
+    "https://docs.google.com/spreadsheets/d/1bPYyC4wrnSfz8swLO2NGgMigfNo1cSwhhTgPud-5QLE/edit?gid=0#gid=0";
 
   console.log("=".repeat(60));
   console.log("📧 EMAIL DELIVERY VERIFICATION (IMPROVED)");

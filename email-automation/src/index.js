@@ -9,6 +9,16 @@ const nodemailer = require("nodemailer");
 require("dotenv").config();
 
 async function sendSummaryReport(stats, totalSent) {
+  const isDryRun = process.env.DRY_RUN === "true" || process.env.DRY_RUN === "1";
+  if (isDryRun) {
+    console.log("\n📬 [DRY RUN] Skipping outreach summary report email send. Details:");
+    console.log(`- Total Emails Sent: ${totalSent}`);
+    console.log(`- Homepage Scraped: ${stats.homepageScraped}`);
+    console.log(`- Careers Openings Referenced: ${stats.careersReferenced}`);
+    console.log(`- Generic / Fallback: ${stats.generic}`);
+    return;
+  }
+
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     console.log("⚠️ EMAIL_USER or EMAIL_PASS not set. Skipping summary report email.");
     return;
@@ -116,15 +126,11 @@ async function main() {
         batchContexts.push({
           email: recipient.email,
           domain: context.domain,
-          companyDescription: context.companyDescription,
           status: context.status,
-          jobOpenings: context.jobOpenings
         });
 
         // Track stats
-        if (context.status === "careers_scraped") {
-          stats.careersReferenced++;
-        } else if (context.status === "homepage_scraped") {
+        if (context.status === "domain_extracted") {
           stats.homepageScraped++;
         } else {
           stats.generic++;

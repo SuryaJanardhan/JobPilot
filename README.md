@@ -15,9 +15,9 @@ The goal is simple: save manual effort and keep your applications moving every d
 
 ### 1) Email Campaign (`email-automation/src/index.js`)
 - Reads unsent contacts from Google Sheets.
-- Scrapes the recruiter's company homepage in parallel to gather context.
-- Generates personalized cold-email bodies in batches of 10 using Groq AI (`llama-3.3-70b-versatile`) to reference company context.
-- Automatically falls back to a witty, tech-themed template if scraping fails or the Groq key is missing.
+- Extracts the company domain name and passes it to the Groq LLM personalization engine.
+- Generates personalized cold-email bodies in batches of 10 using Groq's agentic system (`groq/compound`) by leveraging its built-in web search tool (powered by Tavily) to autonomously research company domains in real-time, completely bypassing unstable local HTTP crawling.
+- Automatically falls back to a witty, tech-themed template if the Groq key is missing.
 - Sends emails via Gmail SMTP, updates Google Sheets, and mails a daily run summary report tracking scraping success rates.
 
 ### 2) Delivery Verification (`email-automation/scripts/phase5.js`)
@@ -33,10 +33,8 @@ The goal is simple: save manual effort and keep your applications moving every d
 
 ### 4) Daily Job Hunter (`web-job-hunter/index.js`)
 - Reads company domains from your target sheet.
-- Runs a single-pass scrape loop over each domain to prevent infinite loops.
-- Scrapes careers/job pages and gathers candidates.
-- **Batch LLM Alignment**: Pre-filters listings and calls the Groq LLM in a single batch to verify if jobs align with your resume skills (Full Stack, Node, React, Python, AI/ML, APIs), fresher suitability (0-2 years), and India eligibility (hybrid/remote).
-- Falls back to keyword heuristics if the LLM key is missing.
+- **Groq Compound Web Search**: Instead of fragile local HTML parsing and HTTP crawling (which are prone to Cloudflare blockages), it queries the `groq/compound` model, which uses its built-in web search tool to find active, resume-aligned SDE / Full Stack / AI fresher and intern roles in India.
+- Returns jobs in a clean, structured JSON format including direct application links and location details.
 - Batch updates Google Sheets at the end of the run to preserve Sheets write quotas.
 - Emails you the aligned job links (internship/FTE) with one-line summaries.
 
@@ -166,5 +164,6 @@ All workflows also support manual trigger (`workflow_dispatch`).
 
 - This repo is optimized for your personal outreach process.
 - Keep sending volume within safe limits to reduce spam/rate-limit risk.
-- For testing job hunter without sending email, set `JOB_HUNTER_DRY_RUN=1`.
+- **Dry Run Mode**: To simulate end-to-end execution without performing active SMTP sending or Google Sheets writes, set the environment variable `DRY_RUN=true` or `DRY_RUN=1`.
+- **Local Testing**: When `DRY_RUN=true` is set, the scripts automatically bypass missing Google service account keys and email configurations by generating mock local verification targets, mock domains, and mock sent/bounced results.
 
