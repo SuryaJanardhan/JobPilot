@@ -5,6 +5,83 @@ const groq = process.env.GROQ_API_KEY
   ? new Groq({ apiKey: process.env.GROQ_API_KEY })
   : null;
 
+const DEFAULT_WEB_SEARCH_MODELS = ["compound-beta-mini", "groq/compound"];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getWebSearchModels() {
+  const raw = process.env.GROQ_WEB_SEARCH_MODELS;
+  if (!raw || !raw.trim()) {
+    return DEFAULT_WEB_SEARCH_MODELS;
+  }
+
+  const models = raw
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+
+  return models.length > 0 ? models : DEFAULT_WEB_SEARCH_MODELS;
+}
+
+function isRateLimitError(error) {
+  const code = String(error?.code || "").toLowerCase();
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    code.includes("rate_limit") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests")
+  );
+}
+
+function getRetryDelayMs(error, attempt) {
+  const message = String(error?.message || "");
+  const match = message.match(/try again in\s+(\d+)ms/i);
+  if (match && match[1]) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return Math.min(1000 * (attempt + 1), 5000);
+}
+
+async function createWebSearchCompletion(messages, maxTokens, temperature = 0.7) {
+  if (!groq) {
+    throw new Error("Groq API client is not initialized because GROQ_API_KEY is missing in env");
+  }
+
+  const models = getWebSearchModels();
+  let lastError = null;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const completion = await groq.chat.completions.create({
+          messages,
+          model,
+          temperature,
+          max_tokens: maxTokens,
+          response_format: { type: "json_object" },
+        });
+        console.log(`✅ Groq completion succeeded with model: ${model}`);
+        return completion;
+      } catch (error) {
+        lastError = error;
+        if (isRateLimitError(error) && attempt < 2) {
+          const waitMs = getRetryDelayMs(error, attempt);
+          console.log(`⏳ Groq rate limited on ${model}. Retrying in ${waitMs}ms...`);
+          await sleep(waitMs);
+          continue;
+        }
+        console.log(`⚠️ Groq model failed (${model}): ${error.message}`);
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error("All Groq web-search models failed");
+}
+
 /**
  * Generate 5 alternative subjects and bodies using Groq LLM
  * @param {string} baseSubject - The original subject line
@@ -138,7 +215,7 @@ For each recipient:
 6. Every email body must start with or include the statement: "I'm Surya Janardhan, currently working at TCS Hyderabad as a System Administrator..." (or a naturally flowing equivalent).
 
 Input data (JSON array of recruiter contexts):
-${JSON.stringify(batchContexts, null, 2)}
+${JSON.stringify(batchContexts)}
 
 Return ONLY a valid JSON object in this exact format (no markdown, no code blocks):
 {
@@ -153,21 +230,16 @@ Return ONLY a valid JSON object in this exact format (no markdown, no code block
 `;
 
   try {
-    if (!groq) {
-      throw new Error("Groq API client is not initialized because GROQ_API_KEY is missing in env");
-    }
-    const completion = await groq.chat.completions.create({
-      messages: [
+    const completion = await createWebSearchCompletion(
+      [
         {
           role: "user",
           content: prompt,
         },
       ],
-      model: "groq/compound",
-      temperature: 0.7,
-      max_tokens: 4000,
-      response_format: { type: "json_object" },
-    });
+      1600,
+      0.5
+    );
 
     const responseText = completion.choices[0]?.message?.content || "";
     console.log("LLM Response received for batch personalization, parsing...");
